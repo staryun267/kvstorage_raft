@@ -1,0 +1,74 @@
+syntax = "proto3";
+
+package raftRpcProtoc;  //所在命名空间
+
+option cc_generic_services = true;  //开启stub服务
+
+//日志实体
+message LogEntry
+{
+    bytes Command = 1;
+    int32 LogTerm = 2;
+    int32 LogIndex = 3;
+}
+
+//追加日志请求
+message AppendEntriesArgs
+{
+	int32 Term = 1;
+	int32 LeaderId = 2;
+	int32 PrevLogIndex = 3;
+	int32 PrevLogTerm = 4;
+	repeated LogEntry Entries = 5;
+	int32 LeaderCommit = 6;
+}
+
+//追加日志回复
+message AppendEntriesReply
+{
+	int32 Term = 1;             // leader的term可能是与Follower不同的，
+	bool Success = 2;
+	int32 UpdateNextIndex = 3;               //快速调整leader对应的nextIndex
+	int32 AppState = 4; // 用来标识节点（网络）状态
+}
+
+//请求投票
+message RequestVoteArgs
+{
+	int32 Term =1;
+	int32 CandidateId = 2;
+	int32 LastLogIndex = 3;
+	int32 LastLogTerm = 4;
+}
+
+//投票回复
+message RequestVoteReply
+{
+	int32 Term = 1;
+	bool VoteGranted = 2;
+	int32 VoteState = 3;
+}
+
+//安装快照请求
+message InstallSnapshotRequest
+{
+	int32 LeaderId = 1;
+	int32 Term = 2;
+	int32 LastSnapShotIncludeIndex = 3;
+	int32 LastSnapShotIncludeTerm = 4;
+	bytes Data = 5;
+}
+
+//安装快照回复
+message InstallSnapshotResponse
+{
+	int32 Term = 1;
+}
+
+//只有raft节点之间才会涉及rpc通信
+service raftRpc  
+{
+    rpc AppendEntries(AppendEntriesArgs) returns (AppendEntriesReply);
+    rpc InstallSnapshot (InstallSnapshotRequest) returns (InstallSnapshotResponse);
+    rpc RequestVote (RequestVoteArgs) returns (RequestVoteReply);
+}
