@@ -3,6 +3,7 @@
 #include <netdb.h>
 #include <unistd.h>
 #include <cstring>
+#include <cstdint>
 #include <fstream>
 #include <string>
 #include "rpcheader.pb.h"
@@ -88,8 +89,24 @@ void RpcProvider::OnConnection(const muduo::net::TcpConnectionPtr &conn) {
 }
 
 void RpcProvider::OnMessage(const muduo::net::TcpConnectionPtr &conn, muduo::net::Buffer *buffer, muduo::Timestamp) {
-  // 网络上接收的远程rpc调用请求的字符流    Login args
-  std::string recv_buf = buffer->retrieveAllAsString();
+  constexpr uint32_t kMaxRpcFrameSize = 64 * 1024 * 1024;
+  if(buffer->readableBytes() < sizeof(uint32_t)) {
+    return;
+  }
+
+  uint32_t network_frame_size = 0;
+  std::memcpy(&network_frame_size, buffer->peek(), sizeof(network_frame_size));
+  const uint32_t frame_size = ntohl(network_frame_size);
+  if(frame_size > kMaxRpcFrameSize) {
+    conn->shutdown();
+    return;
+  }
+  if(buffer->readableBytes() < sizeof(uint32_t) + frame_size) {
+    return;
+  }
+
+  buffer->retrieve(sizeof(uint32_t));
+  std::string recv_buf = buffer->retrieveAsString(frame_size);
 
   // 使用protobuf的CodedInputStream来解析数据流
   google::protobuf::io::ArrayInputStream array_input(recv_buf.data(), recv_buf.size());
@@ -191,8 +208,10 @@ void RpcProvider::SendRpcResponse(const muduo::net::TcpConnectionPtr &conn, goog
   std::string response_str;
   if (response->SerializeToString(&response_str))  // response进行序列化
   {
-    // 序列化成功后，通过网络把rpc方法执行的结果发送会rpc的调用方
-    conn->send(response_str);
+    const uint32_t network_size = htonl(static_cast<uint32_t>(response_str.size()));
+    std::string frame(reinterpret_cast<const char*>(&network_size), sizeof(network_size));
+    frame += response_str;
+    conn->send(frame);
   } else {
     //std::cout << "serialize response_str error!" << std::endl;
   }

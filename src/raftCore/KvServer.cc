@@ -268,10 +268,13 @@ void KvServer::PutAppend(const raftKVRpcProctoc::PutAppendArgs *args, raftKVRpcP
     int _ = -1;
     bool isleader = false;
 
+    // The applier holds m_mtx too, so it cannot publish before the waiter exists.
+    m_mtx.lock();
     m_raftNode->Start(op, &raftindex, &_, &isleader);
 
     if(!isleader)
     {
+        m_mtx.unlock();
         DPrint(
             "[func -KvServer::PutAppend -kvserver{%d}]From Client %s (Request %d) To Server %d, key %s, raftIndex %d , but "
             "not leader",
@@ -286,7 +289,6 @@ void KvServer::PutAppend(const raftKVRpcProctoc::PutAppendArgs *args, raftKVRpcP
         "leader ",
         m_me, &args->clientid(), args->requestid(), m_me, &op.Key, raftindex);
 
-    m_mtx.lock();
     if (waitApplyCh.find(raftindex) == waitApplyCh.end())
     {
         waitApplyCh.insert(std::make_pair(raftindex, new LockQueue<Op>()));
@@ -346,6 +348,8 @@ void KvServer::Get(const raftKVRpcProctoc::GetArgs *args, raftKVRpcProctoc::GetR
     int _ = -1;
     bool isleader = false;
 
+    // The applier holds m_mtx too, so it cannot publish before the waiter exists.
+    m_mtx.lock();
     m_raftNode->Start(op, &raftindex, &_, &isleader);
 
     // std::cout << op.Key << std::endl;
@@ -354,6 +358,7 @@ void KvServer::Get(const raftKVRpcProctoc::GetArgs *args, raftKVRpcProctoc::GetR
 
     if(!isleader)
     {
+        m_mtx.unlock();
         reply->set_err(ErrWrongLeader);
         // std::cout << "-------------------------------------" << std::endl;
         // std::cout << "-------------------------------------" << std::endl;
@@ -365,7 +370,6 @@ void KvServer::Get(const raftKVRpcProctoc::GetArgs *args, raftKVRpcProctoc::GetR
         return;
     }
 
-    m_mtx.lock();
     if(waitApplyCh.find(raftindex) == waitApplyCh.end())
     {
         waitApplyCh.insert(std::make_pair(raftindex, new LockQueue<Op>()));

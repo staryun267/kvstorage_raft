@@ -86,7 +86,11 @@ Timer::Timer(uint64_t ms,std::function<void()> cb,bool recurring,TimerManager* m
 bool Timer::Comparator::operator()(const Timer::ptr& lhs,const Timer::ptr& rhs) const
 {
     assert(lhs && rhs);
-    return lhs->m_next < rhs->m_next;
+    if(lhs->m_next != rhs->m_next)
+    {
+        return lhs->m_next < rhs->m_next;
+    }
+    return lhs.get() < rhs.get();
 }
 
 TimerManager::TimerManager()

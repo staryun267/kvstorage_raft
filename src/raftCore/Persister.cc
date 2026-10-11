@@ -1,6 +1,8 @@
 #include "Persister.h"
 #include "util.h"
 
+#include <iterator>
+
 void Persister::Save(const std::string raftState, const std::string snapshot)
 {
     std::lock_guard<std::mutex> lock(m_mtx);
@@ -9,6 +11,8 @@ void Persister::Save(const std::string raftState, const std::string snapshot)
     //将数据写入文件
     m_raftStateOutStream << raftState;
     m_snapshotOutStream << snapshot;
+    m_raftStateOutStream.flush();
+    m_snapshotOutStream.flush();
 
 }
 
@@ -21,19 +25,16 @@ std::string Persister::ReadSnapshot()
     }
 
     DEFER{
-        m_snapshotOutStream.open(m_snapshotFileName);
+        m_snapshotOutStream.open(m_snapshotFileName, std::ios::out | std::ios::binary | std::ios::app);
     };
 
-    std::fstream ifs(m_snapshotFileName, std::ios_base::in);
+    std::ifstream ifs(m_snapshotFileName, std::ios::binary);
     if(!ifs.good())
     {
         return "";
     }
 
-    std::string snapshot;
-    ifs >> snapshot;
-    ifs.close();
-    return snapshot;
+    return {std::istreambuf_iterator<char>(ifs), std::istreambuf_iterator<char>()};
 }
 
 void Persister::SaveRaftState(const std::string &data)
@@ -58,6 +59,7 @@ void Persister::SaveRaftState(const std::string &data)
     //std::cout << "----------------------------------------+++++++++++++++++++++++++++++++-----------------------------------------" << std::endl;
     
     m_raftStateOutStream << data;
+    m_raftStateOutStream.flush();
     m_raftStateSize += data.size();
 }
 
@@ -72,17 +74,23 @@ std::string Persister::ReadRaftState()
 {
     std::lock_guard<std::mutex> lock(m_mtx);
 
-    std::fstream ifs(m_raftStateFileName, std::ios_base::in);
+    if(m_raftStateOutStream.is_open())
+    {
+        m_raftStateOutStream.close();
+    }
+
+    DEFER{
+        m_raftStateOutStream.open(m_raftStateFileName, std::ios::out | std::ios::binary | std::ios::app);
+    };
+
+    std::ifstream ifs(m_raftStateFileName, std::ios::binary);
     if(!ifs.good())
     {
         return "";
     }
 
 
-    std::string raftState;
-    ifs >> raftState;
-    ifs.close();
-    return raftState;
+    return {std::istreambuf_iterator<char>(ifs), std::istreambuf_iterator<char>()};
 }
 
 Persister::Persister(const int me)
@@ -91,32 +99,31 @@ Persister::Persister(const int me)
       m_raftStateSize(0)
 {
     bool fileOpenFlag = true;
-    std::fstream file(m_raftStateFileName, std::ios::out | std::ios::trunc);
-    if(file.is_open())
+    for(const auto& fileName : {m_raftStateFileName, m_snapshotFileName})
     {
-        file.close();
-    }
-    else
-    {
-        fileOpenFlag = false;
-    }
-
-    file = std::fstream(m_snapshotFileName, std::ios::out | std::ios::trunc);
-    if(file.is_open())
-    {
-        file.close();
-    }
-    else
-    {
-        fileOpenFlag = false;
+        std::ifstream existing(fileName, std::ios::binary);
+        if(existing.good())
+        {
+            continue;
+        }
+        std::ofstream created(fileName, std::ios::binary);
+        if(!created.good())
+        {
+            fileOpenFlag = false;
+        }
     }
 
     if(!fileOpenFlag)
     {
         DPrint("[func-Persister::Persister] file open error");
     }
-    m_raftStateOutStream.open(m_raftStateFileName);
-    m_snapshotOutStream.open(m_snapshotFileName); 
+    m_raftStateOutStream.open(m_raftStateFileName, std::ios::out | std::ios::binary | std::ios::app);
+    m_snapshotOutStream.open(m_snapshotFileName, std::ios::out | std::ios::binary | std::ios::app);
+    std::ifstream raftState(m_raftStateFileName, std::ios::binary | std::ios::ate);
+    if(raftState.good())
+    {
+        m_raftStateSize = raftState.tellg();
+    }
 }
 
 Persister::~Persister()
@@ -141,7 +148,7 @@ void Persister::clearRaftState()
     }
 
     //重新打开，并清空文件内容
-    m_raftStateOutStream.open(m_raftStateFileName, std::ios::out | std::ios::trunc);
+    m_raftStateOutStream.open(m_raftStateFileName, std::ios::out | std::ios::binary | std::ios::trunc);
     //std::cout << "clearRaftState: opened " << m_raftStateFileName << ", is_open: " << m_raftStateOutStream.is_open() << std::endl;
 }
 
@@ -152,7 +159,7 @@ void Persister::clearSnapshot()
         m_snapshotOutStream.close();
     }
 
-    m_snapshotOutStream.open(m_snapshotFileName, std::ios::out | std::ios::trunc);
+    m_snapshotOutStream.open(m_snapshotFileName, std::ios::out | std::ios::binary | std::ios::trunc);
 }
 
 void Persister::clearRaftStateAndSnapshot()

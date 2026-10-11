@@ -9,6 +9,7 @@
 #include <functional>
 #include <iostream>
 #include <map>
+#include <mutex>
 #include <random>  // 包含 std::uniform_int_distribution 类型的头文件
 #include <string>
 #include <unordered_map>
@@ -29,6 +30,7 @@ class MprpcChannel : public google::protobuf::RpcChannel {
   int m_clientFd;
   const std::string m_ip;  //保存ip和端口，如果断了可以尝试重连
   const uint16_t m_port;
+  std::mutex m_mutex;
   bool newConnect(const char *ip, uint16_t port, string *errMsg);
 };
 

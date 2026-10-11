@@ -4,14 +4,43 @@
 #include <sys/socket.h>
 #include <unistd.h>
 #include <cerrno>
+#include <cstdint>
+#include <cstring>
 #include <string>
 #include "mprpccontroller.h"
 #include "rpcheader.pb.h"
 #include "util.h"
 
+namespace {
+constexpr uint32_t kMaxRpcFrameSize = 64 * 1024 * 1024;
+
+bool sendAll(int fd, const void* data, size_t size) {
+  const char* current = static_cast<const char*>(data);
+  while (size > 0) {
+    const ssize_t written = send(fd, current, size, 0);
+    if (written > 0) { current += written; size -= written; continue; }
+    if (written == -1 && errno == EINTR) { continue; }
+    return false;
+  }
+  return true;
+}
+
+bool recvAll(int fd, void* data, size_t size) {
+  char* current = static_cast<char*>(data);
+  while (size > 0) {
+    const ssize_t received = recv(fd, current, size, 0);
+    if (received > 0) { current += received; size -= received; continue; }
+    if (received == -1 && errno == EINTR) { continue; }
+    return false;
+  }
+  return true;
+}
+}  // namespace
+
 void MprpcChannel::CallMethod(const google::protobuf::MethodDescriptor* method,
                               google::protobuf::RpcController* controller, const google::protobuf::Message* request,
                               google::protobuf::Message* response, google::protobuf::Closure* done) {
+  std::lock_guard<std::mutex> lock(m_mutex);
   if (m_clientFd == -1) {
     std::string errMsg;
     bool rt = newConnect(m_ip.c_str(), m_port, &errMsg);
@@ -79,39 +108,42 @@ void MprpcChannel::CallMethod(const google::protobuf::MethodDescriptor* method,
   // std::cout << "args_str: " << args_str << std::endl;
   // std::cout << "============================================" << std::endl;
 
-  // 发送rpc请求
-  //失败会重试连接再发送，重试连接失败会直接return
-  while (-1 == send(m_clientFd, send_rpc_str.c_str(), send_rpc_str.size(), 0)) {
-    char errtxt[512] = {0};
-    sprintf(errtxt, "send error! errno:%d", errno);
-    std::cout << "尝试重新连接，对方ip：" << m_ip << " 对方端口" << m_port << std::endl;
+  const uint32_t network_size = htonl(static_cast<uint32_t>(send_rpc_str.size()));
+  std::string frame(reinterpret_cast<const char*>(&network_size), sizeof(network_size));
+  frame += send_rpc_str;
+
+  if (!sendAll(m_clientFd, frame.data(), frame.size())) {
     close(m_clientFd);
     m_clientFd = -1;
     std::string errMsg;
-    bool rt = newConnect(m_ip.c_str(), m_port, &errMsg);
-    if (!rt) {
+    if (!newConnect(m_ip.c_str(), m_port, &errMsg) || !sendAll(m_clientFd, frame.data(), frame.size())) {
       controller->SetFailed(errMsg);
       return;
     }
   }
 
-  // 接收rpc请求的响应值
-  char recv_buf[1024] = {0};
-  int recv_size = 0;
-  if (-1 == (recv_size = recv(m_clientFd, recv_buf, 1024, 0))) {
+  uint32_t network_response_size = 0;
+  if (!recvAll(m_clientFd, &network_response_size, sizeof(network_response_size))) {
     close(m_clientFd);
     m_clientFd = -1;
-    char errtxt[512] = {0};
-    sprintf(errtxt, "recv error! errno:%d", errno);
-    controller->SetFailed(errtxt);
+    controller->SetFailed("recv rpc response size error");
+    return;
+  }
+  const uint32_t response_size = ntohl(network_response_size);
+  if (response_size > kMaxRpcFrameSize) {
+    controller->SetFailed("rpc response exceeds size limit");
+    return;
+  }
+  std::string response_str(response_size, '\0');
+  if (!recvAll(m_clientFd, response_str.data(), response_str.size())) {
+    close(m_clientFd);
+    m_clientFd = -1;
+    controller->SetFailed("recv rpc response body error");
     return;
   }
 
-  // (!response->ParseFromString(response_str))
-  if (!response->ParseFromArray(recv_buf, recv_size)) {
-    char errtxt[1050] = {0};
-    sprintf(errtxt, "parse error! response_str:%s", recv_buf);
-    controller->SetFailed(errtxt);
+  if (!response->ParseFromString(response_str)) {
+    controller->SetFailed("parse rpc response error");
     return;
   }
 }

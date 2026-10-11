@@ -217,8 +217,17 @@ void Raft::electionTimeOutTicker()
 {
     while(true)
     {
-        while(m_status == Leader)
+        while(true)
         {
+            bool isLeader;
+            {
+                std::lock_guard<std::mutex> lock(m_mtx);
+                isLeader = (m_status == Leader);
+            }
+            if(!isLeader)
+            {
+                break;
+            }
             usleep(HeartBeatTimeout);
         }
 
@@ -248,7 +257,12 @@ void Raft::electionTimeOutTicker()
             //     << std::endl;
         }
 
-        if(std::chrono::duration<double, std::milli>(m_lastResetElectionTime - wakeTime).count() > 0)
+        bool electionTimerReset = false;
+        {
+            std::lock_guard<std::mutex> lock(m_mtx);
+            electionTimerReset = m_lastResetElectionTime > wakeTime;
+        }
+        if(electionTimerReset)
         {
             //睡眠的时候定时器重置了
             continue;
@@ -475,7 +489,13 @@ void Raft::AppendEntries1(const raftRpcProtoc::AppendEntriesArgs *args, raftRpcP
 
                 if(m_logs[getSlicesIndexFromLogIndex(log.logindex())].logterm() != log.logterm())
                 {
-                    m_logs[getSlicesIndexFromLogIndex(log.logindex())] = log;
+                    // A conflicting entry invalidates the follower's entire suffix.
+                    m_logs.erase(m_logs.begin() + getSlicesIndexFromLogIndex(log.logindex()), m_logs.end());
+                    for(int j = i; j < args->entries_size(); ++j)
+                    {
+                        m_logs.push_back(args->entries(j));
+                    }
+                    break;
                 }
             }
         }
@@ -637,8 +657,17 @@ void Raft::leaderHearBeatTicker()
 {
     while(true)
     {
-        while(m_status != Leader)
+        while(true)
         {
+            bool isLeader;
+            {
+                std::lock_guard<std::mutex> lock(m_mtx);
+                isLeader = (m_status == Leader);
+            }
+            if(isLeader)
+            {
+                break;
+            }
             usleep(1000 * HeartBeatTimeout);
         }
 
@@ -669,7 +698,12 @@ void Raft::leaderHearBeatTicker()
         }
 
         //睡觉这段时间，有人发送过心跳消息
-        if(std::chrono::duration<double, std::milli>(m_lastResetHearBeatTime - wakeTime).count() > 0)
+        bool heartbeatTimerReset = false;
+        {
+            std::lock_guard<std::mutex> lock(m_mtx);
+            heartbeatTimerReset = m_lastResetHearBeatTime > wakeTime;
+        }
+        if(heartbeatTimerReset)
         {
             continue;
         }
@@ -899,7 +933,10 @@ void Raft::InstallSnapshot(const raftRpcProtoc::InstallSnapshotRequest *args,
     }
 
     auto lastLogIndex = getLastLogIndex();
-    if(lastLogIndex > args->lastsnapshotincludeindex())
+    const bool hasMatchingSnapshotBoundary =
+        args->lastsnapshotincludeindex() <= lastLogIndex &&
+        getLogTermFromLogIndex(args->lastsnapshotincludeindex()) == args->lastsnapshotincludeterm();
+    if(hasMatchingSnapshotBoundary)
     {
         m_logs.erase(m_logs.begin(), m_logs.begin() + getSlicesIndexFromLogIndex(args->lastsnapshotincludeindex()) + 1);
     }
@@ -975,7 +1012,8 @@ void Raft::leaderSendSnapShot(int server)
 
 bool Raft::CondInstallSnapshot(int lastIncludedTerm, int lastIncludedIndex, std::string snapshot)
 {
-    return true;
+    std::lock_guard<std::mutex> lock(m_mtx);
+    return lastIncludedIndex == m_lastSnapshotIncludeIndex && lastIncludedTerm == m_lastSnapshotIncludeTerm;
 }
 
 
